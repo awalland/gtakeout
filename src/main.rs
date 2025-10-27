@@ -1,0 +1,287 @@
+use clap::Parser;
+use rayon::prelude::*;
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use walkdir::WalkDir;
+
+#[derive(Parser, Debug)]
+#[command(name = "gtakeout")]
+#[command(about = "Process Google Takeout metadata and update EXIF data", long_about = None)]
+struct Args {
+    /// Directory to search recursively for supplemental metadata files
+    #[arg(value_name = "DIRECTORY")]
+    directory: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct PhotoTakenTime {
+    timestamp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    #[serde(rename = "photoTakenTime")]
+    photo_taken_time: PhotoTakenTime,
+}
+
+fn main() {
+    let args = Args::parse();
+
+    if !args.directory.exists() {
+        eprintln!("Error: Directory '{}' does not exist", args.directory.display());
+        std::process::exit(1);
+    }
+
+    if !args.directory.is_dir() {
+        eprintln!("Error: '{}' is not a directory", args.directory.display());
+        std::process::exit(1);
+    }
+
+    println!("Searching for supplemental metadata files in: {}", args.directory.display());
+
+    // Collect all metadata file paths first
+    let metadata_files: Vec<PathBuf> = WalkDir::new(&args.directory)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                return None;
+            }
+
+            let filename = path.file_name()?.to_string_lossy();
+            if filename.ends_with(".supplemental-metadata.json") {
+                Some(path.to_path_buf())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let processed_count = metadata_files.len();
+    let updated_count = AtomicUsize::new(0);
+    let error_count = AtomicUsize::new(0);
+
+    // Process files in parallel across all CPU cores
+    metadata_files.par_iter().for_each(|path| {
+        match process_metadata_file(path) {
+            Ok(true) => {
+                println!("Updated: {}", path.display());
+                updated_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(false) => {
+                println!("Skipped (already has EXIF date): {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("Error processing {}: {}", path.display(), e);
+                error_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+
+    println!("\nSummary:");
+    println!("  Metadata files found: {}", processed_count);
+    println!("  Images updated: {}", updated_count.load(Ordering::Relaxed));
+    println!("  Errors: {}", error_count.load(Ordering::Relaxed));
+}
+
+fn process_metadata_file(json_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    // Find corresponding image file
+    let image_path = get_base_image_path(json_path)?;
+
+    if !image_path.exists() {
+        return Err(format!("Image file not found: {}", image_path.display()).into());
+    }
+
+    // Parse JSON metadata
+    let json_content = fs::read_to_string(json_path)?;
+    let metadata: Metadata = serde_json::from_str(&json_content)?;
+
+    // Check if image already has EXIF date
+    if has_exif_date(&image_path)? {
+        return Ok(false); // Already has date, skip
+    }
+
+    // Update EXIF data
+    let timestamp: i64 = metadata.photo_taken_time.timestamp.parse()?;
+    update_exif_date(&image_path, timestamp)?;
+
+    Ok(true)
+}
+
+fn get_base_image_path(json_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path_str = json_path.to_string_lossy();
+
+    if !path_str.ends_with(".supplemental-metadata.json") {
+        return Err("Path does not end with .supplemental-metadata.json".into());
+    }
+
+    // Remove the .supplemental-metadata.json suffix
+    let base_path = path_str.trim_end_matches(".supplemental-metadata.json");
+    Ok(PathBuf::from(base_path))
+}
+
+fn has_exif_date(image_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let file = fs::File::open(image_path)?;
+    let mut bufreader = std::io::BufReader::new(&file);
+
+    let exifreader = exif::Reader::new();
+    let exif_data = match exifreader.read_from_container(&mut bufreader) {
+        Ok(data) => data,
+        Err(_) => return Ok(false), // No EXIF data means no date
+    };
+
+    // Check for common date/time fields
+    let date_fields = [
+        exif::Tag::DateTimeOriginal,
+        exif::Tag::DateTime,
+        exif::Tag::DateTimeDigitized,
+    ];
+
+    for tag in &date_fields {
+        if exif_data.get_field(*tag, exif::In::PRIMARY).is_some() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn update_exif_date(image_path: &Path, timestamp: i64) -> Result<(), Box<dyn std::error::Error>> {
+    use chrono::{DateTime, Utc};
+    use std::process::Command;
+
+    // Convert timestamp to datetime
+    let dt = DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .ok_or("Invalid timestamp")?;
+
+    // Format as EXIF datetime string (YYYY:MM:DD HH:MM:SS)
+    let exif_datetime = dt.format("%Y:%m:%d %H:%M:%S").to_string();
+
+    // Use exiftool to write EXIF data
+    // Check if exiftool is available
+    let exiftool_check = Command::new("exiftool")
+        .arg("-ver")
+        .output();
+
+    if exiftool_check.is_err() {
+        return Err("exiftool not found. Please install exiftool to update EXIF data.".into());
+    }
+
+    // Run exiftool to set the date
+    let output = Command::new("exiftool")
+        .arg("-overwrite_original")
+        .arg(format!("-DateTimeOriginal={}", exif_datetime))
+        .arg(format!("-DateTime={}", exif_datetime))
+        .arg(format!("-CreateDate={}", exif_datetime))
+        .arg(image_path)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("exiftool failed: {}", stderr).into());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn test_get_base_image_path() {
+        let json_path = Path::new("/test/IMG-20161219-WA0000.jpg.supplemental-metadata.json");
+        let result = get_base_image_path(json_path).unwrap();
+        assert_eq!(result, PathBuf::from("/test/IMG-20161219-WA0000.jpg"));
+    }
+
+    #[test]
+    fn test_integration_with_real_files() {
+        // Check if exiftool is available, skip test if not
+        if Command::new("exiftool").arg("-ver").output().is_err() {
+            eprintln!("Skipping integration test: exiftool not installed");
+            return;
+        }
+
+        // Setup: Create test directory in target
+        let test_dir = PathBuf::from("target/test_data");
+        if test_dir.exists() {
+            fs::remove_dir_all(&test_dir).expect("Failed to clean test directory");
+        }
+        fs::create_dir_all(&test_dir).expect("Failed to create test directory");
+
+        // Copy test files
+        let source_image = Path::new("test/IMG-20161219-WA0000.jpg");
+        let source_json = Path::new("test/IMG-20161219-WA0000.jpg.supplemental-metadata.json");
+        let dest_image = test_dir.join("IMG-20161219-WA0000.jpg");
+        let dest_json = test_dir.join("IMG-20161219-WA0000.jpg.supplemental-metadata.json");
+
+        fs::copy(source_image, &dest_image).expect("Failed to copy image");
+        fs::copy(source_json, &dest_json).expect("Failed to copy JSON");
+
+        // Remove EXIF data from the copied image to simulate an image without dates
+        let strip_output = Command::new("exiftool")
+            .arg("-overwrite_original")
+            .arg("-DateTimeOriginal=")
+            .arg("-DateTime=")
+            .arg("-CreateDate=")
+            .arg(&dest_image)
+            .output()
+            .expect("Failed to strip EXIF data");
+
+        assert!(
+            strip_output.status.success(),
+            "Failed to strip EXIF data: {}",
+            String::from_utf8_lossy(&strip_output.stderr)
+        );
+
+        // Verify EXIF data is removed
+        let has_date = has_exif_date(&dest_image).expect("Failed to check EXIF");
+        assert!(!has_date, "Image should not have EXIF date after stripping");
+
+        // Run the processing function
+        let result = process_metadata_file(&dest_json);
+        assert!(result.is_ok(), "Processing failed: {:?}", result.err());
+        assert_eq!(result.unwrap(), true, "Should have updated the image");
+
+        // Verify EXIF data was written
+        let has_date_after = has_exif_date(&dest_image).expect("Failed to check EXIF after update");
+        assert!(has_date_after, "Image should have EXIF date after processing");
+
+        // Verify the timestamp is correct by reading it
+        let verify_output = Command::new("exiftool")
+            .arg("-DateTimeOriginal")
+            .arg("-s3")
+            .arg(&dest_image)
+            .output()
+            .expect("Failed to read EXIF data");
+
+        let datetime = String::from_utf8_lossy(&verify_output.stdout);
+        let datetime = datetime.trim();
+
+        // Expected timestamp from JSON: 1511480066 = 2017:11:23 23:34:26 UTC
+        assert!(
+            datetime.starts_with("2017:11:23"),
+            "Expected date to start with 2017:11:23, got: {}",
+            datetime
+        );
+
+        // Test that running again skips the file (already has date)
+        let result_second = process_metadata_file(&dest_json);
+        assert!(result_second.is_ok(), "Second processing failed: {:?}", result_second.err());
+        assert_eq!(
+            result_second.unwrap(),
+            false,
+            "Should have skipped the image on second run"
+        );
+
+        // Cleanup
+        fs::remove_dir_all(&test_dir).expect("Failed to cleanup test directory");
+    }
+}
