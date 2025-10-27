@@ -1,6 +1,6 @@
 # gtakeout
 
-A command-line utility for processing Google Takeout photo metadata and updating EXIF timestamps.
+A command-line utility for processing Google Takeout photo and video metadata and updating EXIF timestamps.
 
 ## Overview
 
