@@ -90,25 +90,26 @@ fn main() {
 }
 
 fn process_metadata_file(json_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    // Find corresponding image file
-    let image_path = get_base_image_path(json_path)?;
+    // Find corresponding media file
+    let media_path = get_base_image_path(json_path)?;
 
-    if !image_path.exists() {
-        return Err(format!("Image file not found: {}", image_path.display()).into());
+    // Check if media file exists before reading JSON
+    if !media_path.exists() {
+        return Err(format!("Media file not found: {}", media_path.display()).into());
     }
 
-    // Parse JSON metadata
-    let json_content = fs::read_to_string(json_path)?;
-    let metadata: Metadata = serde_json::from_str(&json_content)?;
-
-    // Check if image already has EXIF date
-    if has_exif_date(&image_path)? {
+    // Check if media already has date metadata before parsing JSON
+    if has_exif_date(&media_path)? {
         return Ok(false); // Already has date, skip
     }
 
+    // Only parse JSON if we need to update the file
+    let json_content = fs::read_to_string(json_path)?;
+    let metadata: Metadata = serde_json::from_str(&json_content)?;
+
     // Update EXIF data
     let timestamp: i64 = metadata.photo_taken_time.timestamp.parse()?;
-    update_exif_date(&image_path, timestamp)?;
+    update_exif_date(&media_path, timestamp)?;
 
     Ok(true)
 }
