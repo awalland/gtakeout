@@ -85,13 +85,13 @@ fn main() {
 
     println!("\nSummary:");
     println!("  Metadata files found: {}", processed_count);
-    println!("  Images updated: {}", updated_count.load(Ordering::Relaxed));
+    println!("  Media files updated: {}", updated_count.load(Ordering::Relaxed));
     println!("  Errors: {}", error_count.load(Ordering::Relaxed));
 }
 
 fn process_metadata_file(json_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     // Find corresponding media file
-    let media_path = get_base_image_path(json_path)?;
+    let media_path = get_base_media_path(json_path)?;
 
     // Check if media file exists before reading JSON
     if !media_path.exists() {
@@ -114,7 +114,7 @@ fn process_metadata_file(json_path: &Path) -> Result<bool, Box<dyn std::error::E
     Ok(true)
 }
 
-fn get_base_image_path(json_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_base_media_path(json_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path_str = json_path.to_string_lossy();
 
     if !path_str.ends_with(".supplemental-metadata.json") {
@@ -248,9 +248,9 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn test_get_base_image_path() {
+    fn test_get_base_media_path() {
         let json_path = Path::new("/test/IMG-20161219-WA0000.jpg.supplemental-metadata.json");
-        let result = get_base_image_path(json_path).unwrap();
+        let result = get_base_media_path(json_path).unwrap();
         assert_eq!(result, PathBuf::from("/test/IMG-20161219-WA0000.jpg"));
     }
 
@@ -287,21 +287,21 @@ mod tests {
         fs::create_dir_all(&test_dir).expect("Failed to create test directory");
 
         // Copy test files
-        let source_image = Path::new("test/IMG-20161219-WA0000.jpg");
+        let source_media = Path::new("test/IMG-20161219-WA0000.jpg");
         let source_json = Path::new("test/IMG-20161219-WA0000.jpg.supplemental-metadata.json");
-        let dest_image = test_dir.join("IMG-20161219-WA0000.jpg");
+        let dest_media = test_dir.join("IMG-20161219-WA0000.jpg");
         let dest_json = test_dir.join("IMG-20161219-WA0000.jpg.supplemental-metadata.json");
 
-        fs::copy(source_image, &dest_image).expect("Failed to copy image");
+        fs::copy(source_media, &dest_media).expect("Failed to copy media file");
         fs::copy(source_json, &dest_json).expect("Failed to copy JSON");
 
-        // Remove EXIF data from the copied image to simulate an image without dates
+        // Remove EXIF data from the copied media file to simulate a file without dates
         let strip_output = Command::new("exiftool")
             .arg("-overwrite_original")
             .arg("-DateTimeOriginal=")
             .arg("-DateTime=")
             .arg("-CreateDate=")
-            .arg(&dest_image)
+            .arg(&dest_media)
             .output()
             .expect("Failed to strip EXIF data");
 
@@ -312,23 +312,23 @@ mod tests {
         );
 
         // Verify EXIF data is removed
-        let has_date = has_exif_date(&dest_image).expect("Failed to check EXIF");
-        assert!(!has_date, "Image should not have EXIF date after stripping");
+        let has_date = has_exif_date(&dest_media).expect("Failed to check EXIF");
+        assert!(!has_date, "Media file should not have EXIF date after stripping");
 
         // Run the processing function
         let result = process_metadata_file(&dest_json);
         assert!(result.is_ok(), "Processing failed: {:?}", result.err());
-        assert_eq!(result.unwrap(), true, "Should have updated the image");
+        assert_eq!(result.unwrap(), true, "Should have updated the media file");
 
         // Verify EXIF data was written
-        let has_date_after = has_exif_date(&dest_image).expect("Failed to check EXIF after update");
-        assert!(has_date_after, "Image should have EXIF date after processing");
+        let has_date_after = has_exif_date(&dest_media).expect("Failed to check EXIF after update");
+        assert!(has_date_after, "Media file should have EXIF date after processing");
 
         // Verify the timestamp is correct by reading it
         let verify_output = Command::new("exiftool")
             .arg("-DateTimeOriginal")
             .arg("-s3")
-            .arg(&dest_image)
+            .arg(&dest_media)
             .output()
             .expect("Failed to read EXIF data");
 
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(
             result_second.unwrap(),
             false,
-            "Should have skipped the image on second run"
+            "Should have skipped the media file on second run"
         );
 
         // Cleanup
