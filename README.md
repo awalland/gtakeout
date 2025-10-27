@@ -113,4 +113,6 @@ The application uses **Rayon** for parallel processing, which automatically dist
 
 ## License
 
-This project is open source. See LICENSE file for details.
+This project is licensed under the WTFPL (Do What The Fuck You Want To Public License) - see the LICENSE file for details.
+
+In short: You just DO WHAT THE FUCK YOU WANT TO.
