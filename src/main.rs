@@ -125,8 +125,50 @@ fn get_base_image_path(json_path: &Path) -> Result<PathBuf, Box<dyn std::error::
     Ok(PathBuf::from(base_path))
 }
 
-fn has_exif_date(image_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let file = fs::File::open(image_path)?;
+fn is_video_file(path: &Path) -> bool {
+    if let Some(ext) = path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        matches!(
+            ext_lower.as_str(),
+            "mp4" | "mov" | "avi" | "mkv" | "m4v" | "3gp" | "webm" | "flv" | "wmv"
+        )
+    } else {
+        false
+    }
+}
+
+fn has_exif_date(file_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    // For video files, use exiftool to check for dates since kamadak-exif doesn't support videos
+    if is_video_file(file_path) {
+        use std::process::Command;
+
+        let output = Command::new("exiftool")
+            .arg("-DateTimeOriginal")
+            .arg("-CreateDate")
+            .arg("-MediaCreateDate")
+            .arg("-TrackCreateDate")
+            .arg("-s3")
+            .arg(file_path)
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(false);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // If any date field has a value (non-empty line), the video has date metadata
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && trimmed != "0000:00:00 00:00:00" {
+                return Ok(true);
+            }
+        }
+
+        return Ok(false);
+    }
+
+    // For image files, use kamadak-exif (faster than calling exiftool)
+    let file = fs::File::open(file_path)?;
     let mut bufreader = std::io::BufReader::new(&file);
 
     let exifreader = exif::Reader::new();
@@ -151,7 +193,7 @@ fn has_exif_date(image_path: &Path) -> Result<bool, Box<dyn std::error::Error>> 
     Ok(false)
 }
 
-fn update_exif_date(image_path: &Path, timestamp: i64) -> Result<(), Box<dyn std::error::Error>> {
+fn update_exif_date(file_path: &Path, timestamp: i64) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::{DateTime, Utc};
     use std::process::Command;
 
@@ -172,14 +214,24 @@ fn update_exif_date(image_path: &Path, timestamp: i64) -> Result<(), Box<dyn std
         return Err("exiftool not found. Please install exiftool to update EXIF data.".into());
     }
 
-    // Run exiftool to set the date
-    let output = Command::new("exiftool")
-        .arg("-overwrite_original")
+    // Build exiftool command with appropriate tags
+    let mut cmd = Command::new("exiftool");
+    cmd.arg("-overwrite_original")
         .arg(format!("-DateTimeOriginal={}", exif_datetime))
         .arg(format!("-DateTime={}", exif_datetime))
-        .arg(format!("-CreateDate={}", exif_datetime))
-        .arg(image_path)
-        .output()?;
+        .arg(format!("-CreateDate={}", exif_datetime));
+
+    // For video files, also set video-specific date tags
+    if is_video_file(file_path) {
+        cmd.arg(format!("-MediaCreateDate={}", exif_datetime))
+            .arg(format!("-MediaModifyDate={}", exif_datetime))
+            .arg(format!("-TrackCreateDate={}", exif_datetime))
+            .arg(format!("-TrackModifyDate={}", exif_datetime));
+    }
+
+    cmd.arg(file_path);
+
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -199,6 +251,23 @@ mod tests {
         let json_path = Path::new("/test/IMG-20161219-WA0000.jpg.supplemental-metadata.json");
         let result = get_base_image_path(json_path).unwrap();
         assert_eq!(result, PathBuf::from("/test/IMG-20161219-WA0000.jpg"));
+    }
+
+    #[test]
+    fn test_is_video_file() {
+        assert!(is_video_file(Path::new("video.mp4")));
+        assert!(is_video_file(Path::new("video.MOV")));
+        assert!(is_video_file(Path::new("video.m4v")));
+        assert!(is_video_file(Path::new("video.avi")));
+        assert!(is_video_file(Path::new("video.mkv")));
+        assert!(is_video_file(Path::new("video.webm")));
+        assert!(is_video_file(Path::new("/path/to/video.MP4")));
+
+        assert!(!is_video_file(Path::new("image.jpg")));
+        assert!(!is_video_file(Path::new("image.png")));
+        assert!(!is_video_file(Path::new("image.jpeg")));
+        assert!(!is_video_file(Path::new("document.pdf")));
+        assert!(!is_video_file(Path::new("noextension")));
     }
 
     #[test]

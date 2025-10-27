@@ -4,15 +4,17 @@ A command-line utility for processing Google Takeout photo metadata and updating
 
 ## Overview
 
-When you export your photos from Google Photos using Google Takeout, you receive `.supplemental-metadata.json` files alongside your images. These JSON files contain metadata including the original photo taken time. This tool automatically updates the EXIF data of images that lack timestamps using the information from these metadata files.
+When you export your photos and videos from Google Photos using Google Takeout, you receive `.supplemental-metadata.json` files alongside your media files. These JSON files contain metadata including the original photo/video taken time. This tool automatically updates the EXIF/metadata of images and videos that lack timestamps using the information from these metadata files.
 
 ## Features
 
 - Recursively searches directories for Google Takeout metadata files
+- **Supports both images and videos** (JPG, PNG, MP4, MOV, AVI, MKV, M4V, 3GP, WebM, FLV, WMV)
 - **Parallel processing across all CPU cores for maximum performance**
-- Extracts photo timestamps from JSON metadata
-- Checks existing EXIF data to avoid overwriting
+- Extracts photo/video timestamps from JSON metadata
+- Checks existing EXIF/metadata to avoid overwriting
 - Updates EXIF DateTimeOriginal, DateTime, and CreateDate fields
+- For videos, also updates MediaCreateDate, TrackCreateDate, and related QuickTime tags
 - Provides summary statistics after processing
 
 ## Prerequisites
@@ -91,11 +93,15 @@ Summary:
 1. Scans directory recursively for `*.supplemental-metadata.json` files
 2. Collects all matching files into a list
 3. **Processes all files in parallel using all available CPU cores**
-4. For each metadata file, determines the corresponding image filename
-5. Checks if the image has existing EXIF date information
+4. For each metadata file, determines the corresponding image/video filename
+5. Detects file type (image or video) and checks for existing date metadata:
+   - For images: Uses fast native EXIF reader
+   - For videos: Uses exiftool to check QuickTime/MP4 date tags
 6. If no date exists, extracts `photoTakenTime.timestamp` from JSON
 7. Converts Unix timestamp to EXIF datetime format (YYYY:MM:DD HH:MM:SS)
-8. Uses exiftool to write the timestamp to the image
+8. Uses exiftool to write the timestamp with appropriate tags:
+   - For images: DateTimeOriginal, DateTime, CreateDate
+   - For videos: Also sets MediaCreateDate, MediaModifyDate, TrackCreateDate, TrackModifyDate
 
 ### Performance
 
